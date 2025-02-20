@@ -495,7 +495,8 @@ public final class Vapi: CallClientDelegate {
             eventSubject.send(event)
         } catch {
             let messageText = String(data: jsonData, encoding: .utf8)
-            print("Error parsing app message \"\(messageText ?? "")\": \(error.localizedDescription)")
+            // Do not use error.localDescription for JSON parsing errors, it swallows important debugging info
+            print("Error parsing app message \"\(messageText ?? "")\": \(error)")
         }
     }
 }
