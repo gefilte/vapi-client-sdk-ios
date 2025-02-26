@@ -439,6 +439,11 @@ public final class Vapi: CallClientDelegate {
                 return
             }
             
+            // Some debugging
+            let messageText = String(data: jsonData, encoding: .utf8)
+            // Do not use error.localDescription for JSON parsing errors, it swallows important debugging info
+            print("*!*!*! here is the JSON response:\n\(messageText ?? "")")
+
             // Parse the JSON data generically to determine the type of event
             let decoder = JSONDecoder()
             let appMessage = try decoder.decode(AppMessage.self, from: unescapedData)
