@@ -386,6 +386,8 @@ public final class Vapi: CallClientDelegate {
         
         self.eventSubject.send(.callDidEnd)
         self.call = nil
+        print("*!*!*! Full transcript:\n\(fullLog.joined(separator: "\n"))")
+        fullLog.removeAll()
     }
     
     func callDidFail(with error: Swift.Error) {
@@ -429,6 +431,7 @@ public final class Vapi: CallClientDelegate {
         }
     }
     
+    private var fullLog: [String] = []
     public func callClient(_ callClient: Daily.CallClient, appMessageAsJson jsonData: Data, from participantID: Daily.ParticipantID) {
         do {
             let (unescapedData, unescapedString) = unescapeAppMessage(jsonData)
@@ -438,9 +441,17 @@ public final class Vapi: CallClientDelegate {
                 eventSubject.send(.callDidStart)
                 return
             }
-            
+
+            // Some debugging
+            let messageText = String(data: jsonData, encoding: .utf8)
+            if let messageText {
+                fullLog.append(messageText)
+            }
+//            print("*!*!*! here is the JSON response:\n\(messageText ?? "")")
+
             // Parse the JSON data generically to determine the type of event
             let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
             let appMessage = try decoder.decode(AppMessage.self, from: unescapedData)
             // Parse the JSON data again, this time using the specific type
             let event: Event
@@ -479,6 +490,46 @@ public final class Vapi: CallClientDelegate {
             case .conversationUpdate:
                 let conv = try decoder.decode(ConversationUpdate.self, from: unescapedData)
                 event = Event.conversationUpdate(conv)
+                
+                let toolCalls = conv.conversation
+                    .compactMap { $0.toolCalls }                        // skip nil values
+                    .flatMap { $0 }                                     // flatten to single list
+                    .filter { !completedToolCallIds.contains($0.id) }   // skip calls we've already seen
+                print("*!*!*! toolCalls: \(toolCalls)")
+                // Check for function call within ConversationUpdate
+                for toolCall in toolCalls {
+                    // Mark call as seen
+                    completedToolCallIds.insert(toolCall.id)
+
+                    // Handle tool call if registered
+                    if let handler = toolHandlers[toolCall.function.name] {
+                        Task {
+                            do {
+                                let argsJson = toolCall.function.arguments
+                                var args: [String: String] = [:]
+                                if let stringData = argsJson.data(using: .utf8) {
+                                    do {
+                                        args = try decoder.decode(Dictionary<String, String>.self, from: stringData)
+                                    } catch {
+                                        args = [:]
+                                    }
+                                }
+                                print("*!*!*!*! calling \(toolCall.function.name) with args \(args)")
+                                try await handler(args)
+                                
+                                // Send result back to Vapi
+                                //                                let response = VapiMessage(
+                                //                                    type: "function_call_response",
+                                //                                    role: "function",
+                                //                                    content: String(describing: result)
+                                //                                )
+                                //                                try await self.send(message: response)
+                            } catch {
+                                print("Error executing tool handler: \(error)")
+                            }
+                        }
+                    }
+                }
             case .statusUpdate:
                 let statusUpdate = try decoder.decode(StatusUpdate.self, from: unescapedData)
                 event = Event.statusUpdate(statusUpdate)
@@ -498,5 +549,16 @@ public final class Vapi: CallClientDelegate {
             // Do not use error.localDescription for JSON parsing errors, it swallows important debugging info
             print("Error parsing app message \"\(messageText ?? "")\": \(error)")
         }
+    }
+
+    // Unfortunately we're not getting a single instance of "this tool fired", but only evidence in the conversation record
+    //   which repeats. ID is needed to ensure we only act on each invocation once
+    private var completedToolCallIds: Set<String> = []
+    // Add new property to store registered tool handlers
+    private var toolHandlers: [String: ([String: String]) async throws -> Void] = [:]
+    
+    // Add method to register tool handlers
+    public func registerTool(_ name: String, handler: @escaping ([String: String]) async throws -> Void) {
+        toolHandlers[name] = handler
     }
 }

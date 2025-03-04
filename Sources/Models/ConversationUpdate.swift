@@ -16,13 +16,13 @@ public struct Message: Codable {
     
     public struct FunctionCall: Codable {
         public let name: String
-        public let arguments: String
+        public let arguments: String // encoded again as JSON
     }
     
     public let role: Role
     public let content: String?
-    public let tool_calls: [ToolCall]?
-    public let tool_call_id: String?
+    public let toolCalls: [ToolCall]?
+    public let toolCallId: String?
 }
 
 public struct ConversationUpdate: Codable {
