@@ -62,6 +62,13 @@ public final class Vapi: CallClientDelegate {
     private let networkManager = NetworkManager()
     private var call: CallClient?
     
+    // Unfortunately we're not getting a single instance of "this tool fired", but only evidence in the conversation record
+    //   which repeats. ID is needed to ensure we only act on each invocation once.
+    private var completedToolCallIds: Set<String> = []
+
+    // Registered tool handlers. Key is used to match function.name for toolCalls in ConversationUpdate records
+    private var toolHandlers: [String: ([String: String]) async throws -> Void] = [:]
+    
     // MARK: - Computed Properties
     
     private var publicKey: String {
@@ -255,6 +262,14 @@ public final class Vapi: CallClientDelegate {
             print("Failed to change the AudioDeviceType with error: \(error)")
             throw error
         }
+    }
+
+    /// This method adds a function handler used to match to assistant tool calls triggered by conversation.
+    /// It is most useful for async functions. Handlers will be invoked the first time the function call is seen regardless of status.
+    /// - Parameter name: must match the "Tool Name" of the VAPI tool entity
+    /// - Parameter handler: function to invoke. Invocation properties will be passed to the function as a dictionary
+    public func registerTool(_ name: String, handler: @escaping ([String: String]) async throws -> Void) {
+        toolHandlers[name] = handler
     }
 
     private func joinCall(url: URL, recordVideo: Bool) {
@@ -491,20 +506,22 @@ public final class Vapi: CallClientDelegate {
                 let conv = try decoder.decode(ConversationUpdate.self, from: unescapedData)
                 event = Event.conversationUpdate(conv)
                 
+                // extract tool calls from the conversationUpdate that have not previously appeared
                 let toolCalls = conv.conversation
                     .compactMap { $0.toolCalls }                        // skip nil values
                     .flatMap { $0 }                                     // flatten to single list
                     .filter { !completedToolCallIds.contains($0.id) }   // skip calls we've already seen
                 print("*!*!*! toolCalls: \(toolCalls)")
-                // Check for function call within ConversationUpdate
+
                 for toolCall in toolCalls {
                     // Mark call as seen
                     completedToolCallIds.insert(toolCall.id)
 
-                    // Handle tool call if registered
+                    // Handle tool call if matching name registered with registerTool()
                     if let handler = toolHandlers[toolCall.function.name] {
                         Task {
                             do {
+                                // arguments are buried in a JSON-encoded string so they were not decoded above
                                 let argsJson = toolCall.function.arguments
                                 var args: [String: String] = [:]
                                 if let stringData = argsJson.data(using: .utf8) {
@@ -517,13 +534,13 @@ public final class Vapi: CallClientDelegate {
                                 print("*!*!*!*! calling \(toolCall.function.name) with args \(args)")
                                 try await handler(args)
                                 
-                                // Send result back to Vapi
-                                //                                let response = VapiMessage(
-                                //                                    type: "function_call_response",
-                                //                                    role: "function",
-                                //                                    content: String(describing: result)
-                                //                                )
-                                //                                try await self.send(message: response)
+//                                // Send result back to Vapi
+//                                let response = VapiMessage(
+//                                    type: "function_call_response",
+//                                    role: "function",
+//                                    content: String(describing: result)
+//                                )
+//                                try await self.send(message: response)
                             } catch {
                                 print("Error executing tool handler: \(error)")
                             }
@@ -549,16 +566,5 @@ public final class Vapi: CallClientDelegate {
             // Do not use error.localDescription for JSON parsing errors, it swallows important debugging info
             print("Error parsing app message \"\(messageText ?? "")\": \(error)")
         }
-    }
-
-    // Unfortunately we're not getting a single instance of "this tool fired", but only evidence in the conversation record
-    //   which repeats. ID is needed to ensure we only act on each invocation once
-    private var completedToolCallIds: Set<String> = []
-    // Add new property to store registered tool handlers
-    private var toolHandlers: [String: ([String: String]) async throws -> Void] = [:]
-    
-    // Add method to register tool handlers
-    public func registerTool(_ name: String, handler: @escaping ([String: String]) async throws -> Void) {
-        toolHandlers[name] = handler
     }
 }
